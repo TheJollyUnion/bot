@@ -1,0 +1,3 @@
+[submodule "src/database"]
+	path = src/database
+	url = git@github.com:TheJollyUnion/database.git
