@@ -12,6 +12,7 @@ export default {
         resolve(),
         typescript({
             tsconfig: "tsconfig.json",
+            clean: false,
         }),
     ],
 }
