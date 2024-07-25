@@ -38,6 +38,15 @@ const auxMe = await auxClient.getMe()
 
 const messages: Api.Message[] = []
 
+setInterval(async () => {
+    try {
+        await mainClient.connect()
+        await auxClient.connect()
+    } catch (e) {
+        console.error(e)
+    }
+}, 1000 * 60 * 10)
+
 auxClient.addEventHandler(async (update: NewMessageEvent) => {
     messages.push(update.message)
     if (update.chatId?.toString() !== telegramDMCAChatId) return
