@@ -4,6 +4,7 @@ import { StringSession } from "telegram/sessions/index.js"
 import { NewMessage, type NewMessageEvent } from "telegram/events/index.js"
 import { Telegraf } from "telegraf"
 import { Groups, Templates } from "@theJollyUnion/database"
+import resolve from "resolvjs"
 import type { Direction } from "readline"
 import type { Group, Template } from "@theJollyUnion/database/models"
 import type { Message } from "telegraf/types"
@@ -30,40 +31,51 @@ const mainClient = new TelegramClient(mainSessionString, apiId, apiHash, {})
 const auxSessionString = new StringSession(AuxSessionString)
 const auxClient = new TelegramClient(auxSessionString, apiId, apiHash, {})
 
-const bot = new Telegraf(botToken)
+const bot = new Telegraf(botToken, { handlerTimeout: Infinity })
 
 await mainClient.connect()
 await auxClient.connect()
 const auxMe = await auxClient.getMe()
 
 const messages: Api.Message[] = []
-
-setInterval(async () => {
-    try {
-        await mainClient.connect()
-        await auxClient.connect()
-    } catch (e) {
-        console.error(e)
-    }
-}, 1000 * 60 * 10)
-
 auxClient.addEventHandler(async (update: NewMessageEvent) => {
     messages.push(update.message)
-    if (update.chatId?.toString() !== telegramDMCAChatId) return
-
-    const { rows: allGroups } = (await Groups.find()) as { rows: Group[] }
-
-    for (let g = 0; g < allGroups.length; g++) {
-        const group = allGroups[g]
-        if (!update.message.message.includes(group.id)) continue
-        if (!group.clean) continue
-
-        await Groups.findOneAndUpdate({ id: group.id }, { clean: false })
-        await publishGroup(group.template)
-
-        break
-    }
 }, new NewMessage({}))
+
+bot.command("replace", async (ctx) => {
+    await ctx.sendChatAction("typing")
+    const [administrators, administratorsError] = await resolve(ctx.telegram.getChatAdministrators(indexGroupId))
+    if (administratorsError) return console.error(administratorsError)
+    if (!administrators.some((administrator) => administrator.user.id === ctx.from.id)) return console.warn(`User ${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) is not an administrator of the index group`)
+    const groupID = ctx.message.text.split(" ")[1]
+    console.log(`${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) requesting replacement of group ${groupID}`)
+    const [group, findGroupError] = await resolve<Group>(Groups.findOne({ id: groupID }))
+    if (findGroupError) {
+        ctx.reply(`Group ${groupID} not found`)
+        return console.error(findGroupError)
+    }
+    
+    const [updateResult, updateError] = await resolve(Groups.findOneAndUpdate({ id: groupID }, { clean: false }))
+    if (updateError) {
+        ctx.reply(`Could not set dirty flag for group ${groupID} group may be reused`)
+        console.error(updateError)
+    }
+
+    const [publishResult, publishError] = await resolve(publishGroup(group.template))
+    if (publishError) {
+        if (publishError["errorMessage"] === "CHAT_NOT_MODIFIED") {
+            await ctx.reply(`Could not publish new ${group.template} group. Replacement group likely already published`)
+        } else {
+        ctx.reply(`Could not publish new ${group.template} group`)
+        console.error(publishError)
+        }
+    } else {
+        await ctx.reply(`Published new ${group.template} group`)
+        console.log(`${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) published new ${group.template} group`)
+    }
+})
+
+bot.launch()
 
 async function publishGroup(code: string) {
     const template = await Templates.findOne({ code })
@@ -71,31 +83,36 @@ async function publishGroup(code: string) {
     const group = await Groups.findOne({ $and: [{ status: "ready" }, { clean: true }, { template: code }] })
     if (!group) throw new Error(`Group not found for ${code}`)
 
-    await floodProtection("Prepare Group", () =>
-        auxClient.invoke(
-            new Api.channels.EditTitle({
-                channel: "-100" + group.id,
-                title: `${template.title} [${group.id}]`,
-            })
+    try {
+        await floodProtection("Prepare Group", () =>
+            auxClient.invoke(
+                new Api.channels.EditTitle({
+                    channel: "-100" + group.id,
+                    title: `${template.title} [${group.id}]`,
+                })
+            )
         )
-    )
 
-    const botMessage = await bot.telegram.sendMessage(auxMe.id.toString(), createIndexMessage(template, group.inviteLink), { parse_mode: "HTML" })
+        const botMessage = await bot.telegram.sendMessage(auxMe.id.toString(), createIndexMessage(template, group.inviteLink), { parse_mode: "HTML" })
 
-    const receivedMessage = await getBotMessage(botMessage)
-    if (!receivedMessage) throw new Error("Failed to receive message")
-    await floodProtection("Publish Group", () =>
-        mainClient.invoke(
-            new Api.messages.EditMessage({
-                peer: indexGroupId,
-                id: template.indexMessage.id,
-                message: receivedMessage.message,
-                entities: receivedMessage.entities,
-            })
+        const receivedMessage = await getBotMessage(botMessage)
+        if (!receivedMessage) throw new Error("Failed to receive message")
+        await floodProtection("Publish Group", () =>
+            mainClient.invoke(
+                new Api.messages.EditMessage({
+                    peer: indexGroupId,
+                    id: template.indexMessage.id,
+                    message: receivedMessage.message,
+                    entities: receivedMessage.entities,
+                })
+            )
         )
-    )
+        await bot.telegram.deleteMessage(auxMe.id.toString(), botMessage.message_id)
+    } catch (e) {
+        await Groups.findOneAndUpdate({ id: group.id }, { clean: false })
+        throw e
+    }
 
-    await bot.telegram.deleteMessage(auxMe.id.toString(), botMessage.message_id)
 }
 
 function getBotMessage(msg: Message.TextMessage): Promise<Api.Message | null> {
