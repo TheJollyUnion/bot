@@ -100,6 +100,16 @@ bot.command("new", async (ctx) => {
     }
 })
 
+bot.command("templates", async (ctx) => {
+    await ctx.sendChatAction("typing")
+    const [administrators, administratorsError] = await resolve(ctx.telegram.getChatAdministrators(indexGroupId))
+    if (administratorsError) return console.error(administratorsError)
+    if (!administrators.some((administrator) => administrator.user.id === ctx.from.id)) return console.warn(`User ${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) is not an administrator of the index group`)
+    const templates = await Templates.find() as { rows: Template[] }
+    const templateList = templates.rows.map((template) => `${template.code} - ${template.title}`).join("\n")
+    await ctx.reply(templateList)
+})
+
 bot.launch()
 
 async function publishGroup(code: string) {
