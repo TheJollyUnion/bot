@@ -78,6 +78,28 @@ bot.command("replace", async (ctx) => {
     }
 })
 
+bot.command("new", async (ctx) => {
+    await ctx.sendChatAction("typing")
+    const [administrators, administratorsError] = await resolve(ctx.telegram.getChatAdministrators(indexGroupId))
+    if (administratorsError) return console.error(administratorsError)
+    if (!administrators.some((administrator) => administrator.user.id === ctx.from.id)) return console.warn(`User ${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) is not an administrator of the index group`)
+    const code = ctx.message.text.split(" ")[1]
+    console.log(`${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) requesting new ${code} group`)
+
+    const [publishResult, publishError] = await resolve(publishGroup(code))
+    if (publishError) {
+        if (publishError["errorMessage"] === "CHAT_NOT_MODIFIED") {
+            await ctx.reply(`Could not publish new ${code} group. Replacement group likely already published`)
+        } else {
+        ctx.reply(`Could not publish new ${code} group`)
+        console.error(publishError)
+        }
+    } else {
+        await ctx.reply(`Published new ${code} group`)
+        console.log(`${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) published new ${code} group`)
+    }
+})
+
 bot.launch()
 
 async function publishGroup(code: string) {
