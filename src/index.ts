@@ -61,6 +61,9 @@ bot.command("replace", async (ctx) => {
         console.error(updateError)
     }
 
+    await auxClient.connect()
+    await mainClient.connect()
+
     const [publishResult, publishError] = await resolve(publishGroup(group.template))
     if (publishError) {
         if (publishError["errorMessage"] === "CHAT_NOT_MODIFIED") {
