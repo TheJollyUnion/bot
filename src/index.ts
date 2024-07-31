@@ -106,8 +106,8 @@ bot.command("templates", async (ctx) => {
     if (administratorsError) return console.error(administratorsError)
     if (!administrators.some((administrator) => administrator.user.id === ctx.from.id)) return console.warn(`User ${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) is not an administrator of the index group`)
     const templates = await Templates.find() as { rows: Template[] }
-    const templateList = templates.rows.map((template) => `${template.code} - ${template.title}`).join("\n")
-    await ctx.reply(templateList)
+    const templateList = templates.rows.map((template) => `*${template.code}* — _${template.title}_`).join("\n") 
+    await ctx.reply(templateList, { parse_mode: "Markdown" })
 })
 
 bot.launch()
