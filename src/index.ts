@@ -4,6 +4,9 @@ import { StringSession } from "telegram/sessions/index.js"
 import { NewMessage, type NewMessageEvent } from "telegram/events/index.js"
 import { Telegraf } from "telegraf"
 import { Groups, Templates } from "@theJollyUnion/database"
+import directToTopics from './directToTopics'
+import deleteSystemMessages from './deleteSystemMessages'
+
 import resolve from "resolvjs"
 import type { Direction } from "readline"
 import type { Group, Template } from "@theJollyUnion/database/models"
@@ -16,6 +19,7 @@ const AuxSessionString = process.env.AUX_SESSION_STRING
 const botToken = process.env.BOT_TOKEN
 const telegramDMCAChatId = process.env.TELEGRAM_DMCA_CHAT_ID
 const indexGroupId = process.env.INDEX_GROUP_ID
+const directToTopicGroupId = Number(process.env.DTT_GROUP)
 
 if (!apiId) throw new Error("API_ID not set")
 if (!apiHash) throw new Error("API_HASH not set")
@@ -24,6 +28,7 @@ if (!AuxSessionString) throw new Error("AUX_SESSION_STRING not set")
 if (!botToken) throw new Error("BOT_TOKEN not set")
 if (!telegramDMCAChatId) throw new Error("TELEGRAM_DMCA_CHAT_ID not set")
 if (!indexGroupId) throw new Error("INDEX_GROUP_ID not set")
+if (!directToTopicGroupId) throw new Error("DTT_GROUP not set")
 
 const mainSessionString = new StringSession(MainSessionString)
 const mainClient = new TelegramClient(mainSessionString, apiId, apiHash, {})
@@ -32,6 +37,8 @@ const auxSessionString = new StringSession(AuxSessionString)
 const auxClient = new TelegramClient(auxSessionString, apiId, apiHash, {})
 
 const bot = new Telegraf(botToken, { handlerTimeout: Infinity })
+directToTopics(bot, directToTopicGroupId)
+deleteSystemMessages(bot)
 
 await mainClient.connect()
 await auxClient.connect()
@@ -45,14 +52,32 @@ auxClient.addEventHandler(async (update: NewMessageEvent) => {
 bot.command("replace", async (ctx) => {
     await ctx.sendChatAction("typing")
     const [administrators, administratorsError] = await resolve(ctx.telegram.getChatAdministrators(indexGroupId))
+    let isAdmin = true
     if (administratorsError) return console.error(administratorsError)
-    if (!administrators.some((administrator) => administrator.user.id === ctx.from.id)) return console.warn(`User ${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) is not an administrator of the index group`)
+    if (!administrators.some((administrator) => administrator.user.id === ctx.from.id)) isAdmin = false
     const groupID = ctx.message.text.split(" ")[1]
     console.log(`${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) requesting replacement of group ${groupID}`)
     const [group, findGroupError] = await resolve<Group>(Groups.findOne({ id: groupID }))
     if (findGroupError) {
         ctx.reply(`Group ${groupID} not found`)
         return console.error(findGroupError)
+    }
+
+    const [template, findTemplateError] = await resolve<Template>(Templates.findOne({ code: group.template }))
+    if (findTemplateError) {
+        ctx.reply(`Template ${group.template} not found`)
+        return console.error(findTemplateError)
+    }
+
+    if (!isAdmin) return ctx.reply("No replacement groups available")
+
+    if (!isAdmin && template.replaced) {
+        const now = new Date()
+        const replaced = new Date(template.replaced)
+        if (now.getTime() - replaced.getTime() < 24 * 60 * 60 * 1000) {
+            ctx.reply(`Group not eligible for replacement`)
+            return
+        }
     }
     
     const [updateResult, updateError] = await resolve(Groups.findOneAndUpdate({ id: groupID }, { clean: false }))
@@ -73,6 +98,7 @@ bot.command("replace", async (ctx) => {
         console.error(publishError)
         }
     } else {
+        await Templates.findOneAndUpdate({ code: group.template }, { replaced: new Date() })
         await ctx.reply(`Published new ${group.template} group`)
         console.log(`${ctx.from.id} (${ctx.from.username || ctx.from.first_name}) published new ${group.template} group`)
     }
@@ -89,6 +115,7 @@ bot.command("new", async (ctx) => {
     const [publishResult, publishError] = await resolve(publishGroup(code))
     if (publishError) {
         if (publishError["errorMessage"] === "CHAT_NOT_MODIFIED") {
+            console.log(publishError)
             await ctx.reply(`Could not publish new ${code} group. Replacement group likely already published`)
         } else {
         ctx.reply(`Could not publish new ${code} group`)
@@ -110,9 +137,11 @@ bot.command("templates", async (ctx) => {
     await ctx.reply(templateList, { parse_mode: "Markdown" })
 })
 
-bot.launch()
+await bot.launch()
+console.log("here")
 
 async function publishGroup(code: string) {
+    console.log(code)
     const template = await Templates.findOne({ code })
     if (!template) throw new Error(`Template not found for ${code}`)
     const group = await Groups.findOne({ $and: [{ status: "ready" }, { clean: true }, { template: code }] })
@@ -127,6 +156,11 @@ async function publishGroup(code: string) {
                 })
             )
         )
+    } catch (e) {
+        console.log("chat title already set")
+    }
+
+    try {
 
         const botMessage = await bot.telegram.sendMessage(auxMe.id.toString(), createIndexMessage(template, group.inviteLink), { parse_mode: "HTML" })
 
